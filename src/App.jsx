@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 
 /* ═══════════════════════════════════════════════════════════
    WUNDERLIST  —  Your travel inspiration, organised
@@ -7,13 +7,13 @@ import { useState, useRef, useCallback } from "react";
    ─────────────────────────────────────────────────────────
    iOS:  Add a Share Extension target (Swift) to the Expo/RN app.
          When user taps the send icon in Instagram → scrolls share sheet
-         → taps Anable. The iOS extension receives the public post URL
+         → taps Wunderlist. The iOS extension receives the public post URL
          via NSExtensionItem, deep-links into the main app:
            wunderlist://save?url=https://www.instagram.com/p/XXX
          Package: expo-share-intent (handles iOS + Android in one hook)
 
    Android: Add <intent-filter ACTION_SEND mimeType="text/plain"> to
-            AndroidManifest.xml. Anable appears in Android share sheet.
+            AndroidManifest.xml. Wunderlist appears in Android share sheet.
             Intent extras carry the post URL. Same expo-share-intent
             package handles this identically to iOS.
 
@@ -26,9 +26,9 @@ import { useState, useRef, useCallback } from "react";
      For robust production use: Apify Instagram Post Scraper API or
      a self-hosted Puppeteer/Playwright microservice with rotating proxies.
 
-   Web fallback (this build): user pastes the URL → /api/parse-url
+   Web / PWA (this build): user pastes the URL → /api/parse-url
    extracts OpenGraph metadata server-side and classifies the post.
-   Replace all "anable" references with "wunderlist" for the production app.
+   Saves are persisted to localStorage so they survive page refreshes.
 ═══════════════════════════════════════════════════════════ */
 
 const CATEGORIES = {
@@ -128,13 +128,17 @@ const daysBetween = (a, b) => a && b ? Math.round((b - a) / 86400000) : null;
 const fmtDate     = d => d ? d.toLocaleDateString("en-US", { weekday:"short", month:"short", day:"numeric" }) : "";
 const addDays     = (d, n) => { const r = new Date(d); r.setDate(r.getDate() + n); return r; };
 
+function loadFromStorage(key, fallback) {
+  try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : fallback; } catch { return fallback; }
+}
+
 export default function App() {
-  const [posts, setPosts]           = useState(DEMO);
-  const [dests, setDests]           = useState(() => buildDests(DEMO));
+  const [posts, setPosts]           = useState(() => loadFromStorage("wl_posts", []));
+  const [dests, setDests]           = useState(() => buildDests(loadFromStorage("wl_posts", [])));
   const [screen, setScreen]         = useState("home");
   const [activeDest, setActiveDest] = useState(null);
   const [catFilter, setCatFilter]   = useState("all");
-  const [starred, setStarred]       = useState({});
+  const [starred, setStarred]       = useState(() => loadFromStorage("wl_starred", {}));
   const [tripModal, setTripModal]   = useState(false);
   const [trip, setTrip]             = useState({ origin:"", arrival:"", departure:"", travelers:"2", notes:"" });
   const [itinerary, setItinerary]   = useState(null);
@@ -145,6 +149,10 @@ export default function App() {
   const [toast, setToast]           = useState(null);
   const [hoveredDest, setHoveredDest] = useState(null);
   const toastRef = useRef();
+
+  // Persist saves and stars to localStorage
+  useEffect(() => { try { localStorage.setItem("wl_posts", JSON.stringify(posts)); } catch {} }, [posts]);
+  useEffect(() => { try { localStorage.setItem("wl_starred", JSON.stringify(starred)); } catch {} }, [starred]);
 
   const showToast = (msg, ok = true) => {
     clearTimeout(toastRef.current);
@@ -296,7 +304,7 @@ Return this exact JSON structure (no other text):
             {/* Native share steps */}
             <div style={{background:"rgba(201,169,110,.07)",border:"1px solid rgba(201,169,110,.15)",borderRadius:16,padding:"18px 20px",marginBottom:24}}>
               <div style={{fontSize:10,letterSpacing:".22em",textTransform:"uppercase",color:"#C9A96E",marginBottom:14}}>📱 On iOS or Android</div>
-              {[["1","Open any travel post, reel, or story in Instagram"],["2","Tap the paper plane icon (bottom right of post)"],["3","Scroll the share sheet — tap Anable"],["4","The post is instantly sorted into the right destination"]].map(([n,t])=>(
+              {[["1","Open any travel post, reel, or story in Instagram"],["2","Tap the paper plane icon (bottom right of post)"],["3","Scroll the share sheet — tap Wunderlist"],["4","The post is instantly sorted into the right destination"]].map(([n,t])=>(
                 <div key={n} style={{display:"flex",gap:12,marginBottom:9,alignItems:"flex-start"}}>
                   <div style={{width:22,height:22,borderRadius:"50%",background:"rgba(201,169,110,.18)",border:"1px solid rgba(201,169,110,.4)",fontSize:11,color:"#C9A96E",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0,fontWeight:700,marginTop:1}}>{n}</div>
                   <div style={{fontSize:13,color:"#8A8070",lineHeight:1.55}}>{t}</div>
@@ -328,7 +336,7 @@ Return this exact JSON structure (no other text):
           <div style={{position:"relative",background:"#10101E",border:"1px solid rgba(255,255,255,.1)",borderRadius:28,padding:"34px 30px",maxWidth:460,width:"100%",boxShadow:"0 40px 80px rgba(0,0,0,.6)",animation:"fadeUp .3s ease",maxHeight:"92vh",overflowY:"auto"}}>
             <div style={{fontFamily:"'Cormorant Garamond',serif",fontStyle:"italic",fontSize:13,color:"#C9A96E",letterSpacing:".2em",textTransform:"uppercase",marginBottom:5}}>Trip Details</div>
             <h2 style={{fontFamily:"'Cormorant Garamond',serif",fontSize:28,fontWeight:300,marginBottom:6}}>Plan {destObj?.name}</h2>
-            <p style={{color:"#5A5448",fontSize:13,marginBottom:26,lineHeight:1.65}}>Your exact dates let Anable build an itinerary calibrated to your actual days on the ground — including arrival and departure logistics.</p>
+            <p style={{color:"#5A5448",fontSize:13,marginBottom:26,lineHeight:1.65}}>Your exact dates let Wunderlist build an itinerary calibrated to your actual days on the ground — including arrival and departure logistics.</p>
 
             <div style={{display:"flex",flexDirection:"column",gap:16}}>
               {[["Flying from","origin","text","e.g. Chicago (ORD)"],["Arrival date","arrival","date",""],["Departure date","departure","date",""]].map(([lbl,key,type,ph])=>(
@@ -380,6 +388,9 @@ Return this exact JSON structure (no other text):
               <span style={{fontFamily:"'Cormorant Garamond',serif",fontSize:26,fontWeight:300,background:"linear-gradient(135deg,#EAE6DC,#C9A96E)",WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent"}}>wunderlist</span>
               <div style={{display:"flex",gap:10,alignItems:"center"}}>
                 <span style={{fontSize:12,color:"#3A3530"}}>{posts.length} saves · {dests.length} destinations</span>
+                {posts.length > 0 && (
+                  <button onClick={()=>{ if(window.confirm("Clear all saves? This can't be undone.")) { setPosts([]); setDests([]); setStarred({}); }}} className="ghost" style={{padding:"8px 14px",fontSize:11,borderRadius:9,fontFamily:"'DM Sans',sans-serif"}}>Clear</button>
+                )}
                 <button onClick={()=>setShareModal(true)} className="gold" style={{padding:"10px 20px",fontSize:12,borderRadius:11,fontFamily:"'DM Sans',sans-serif"}}>+ Save a Post</button>
               </div>
             </nav>
@@ -397,11 +408,24 @@ Return this exact JSON structure (no other text):
                   <div style={{fontSize:30}}>📲</div>
                   <div>
                     <div style={{fontSize:14,fontWeight:500,color:"#C9A96E",marginBottom:3}}>Share any Instagram travel post directly to Wunderlist</div>
-                    <div style={{fontSize:12,color:"#4A4440"}}>Tap the send icon in Instagram → Anable — it auto-drops into the right bucket</div>
+                    <div style={{fontSize:12,color:"#4A4440"}}>Tap the send icon in Instagram → Wunderlist — it auto-drops into the right bucket</div>
                   </div>
                 </div>
                 <button onClick={()=>setShareModal(true)} className="ghost" style={{padding:"10px 20px",fontSize:12,borderRadius:11,fontFamily:"'DM Sans',sans-serif",color:"#C9A96E",borderColor:"rgba(201,169,110,.3)",whiteSpace:"nowrap"}}>How it works →</button>
               </div>
+
+              {dests.length === 0 && (
+                <div style={{textAlign:"center",padding:"80px 20px",animation:"fadeUp .5s ease"}}>
+                  <div style={{fontSize:52,marginBottom:20}}>🗺️</div>
+                  <div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:28,fontWeight:300,marginBottom:10}}>No saves yet</div>
+                  <p style={{color:"#4A4440",fontSize:14,lineHeight:1.75,maxWidth:380,margin:"0 auto 28px"}}>
+                    Paste an Instagram post link above to start building your travel collection — or load some sample destinations to explore how it works.
+                  </p>
+                  <button onClick={()=>{ setPosts(DEMO); setDests(buildDests(DEMO)); }} className="ghost" style={{padding:"12px 28px",fontSize:13,borderRadius:14,fontFamily:"'DM Sans',sans-serif",color:"#C9A96E",borderColor:"rgba(201,169,110,.3)"}}>
+                    Load sample destinations →
+                  </button>
+                </div>
+              )}
 
               <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(290px,1fr))",gap:20}}>
                 {dests.map((dest, idx) => {
