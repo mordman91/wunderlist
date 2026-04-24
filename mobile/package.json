@@ -1,0 +1,32 @@
+{
+  "name": "wunderlist",
+  "version": "1.0.0",
+  "main": "expo-router/entry",
+  "scripts": {
+    "start": "expo start",
+    "android": "expo run:android",
+    "ios": "expo run:ios",
+    "build:ios": "eas build --platform ios",
+    "build:android": "eas build --platform android"
+  },
+  "dependencies": {
+    "@react-native-async-storage/async-storage": "2.1.2",
+    "expo": "~53.0.0",
+    "expo-constants": "~17.0.8",
+    "expo-linear-gradient": "~14.1.4",
+    "expo-linking": "~7.1.5",
+    "expo-router": "~4.1.3",
+    "expo-share-intent": "^3.2.0",
+    "expo-status-bar": "~2.2.3",
+    "react": "18.3.1",
+    "react-native": "0.79.2",
+    "react-native-safe-area-context": "5.4.0",
+    "react-native-screens": "~4.10.0"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.25.2",
+    "@types/react": "~18.3.12",
+    "babel-plugin-module-resolver": "^5.0.2",
+    "typescript": "^5.3.3"
+  }
+}
