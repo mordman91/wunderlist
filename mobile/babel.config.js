@@ -10,7 +10,6 @@ module.exports = function (api) {
           alias: { "@": "./" },
         },
       ],
-      "expo-router/babel",
     ],
   };
 };
