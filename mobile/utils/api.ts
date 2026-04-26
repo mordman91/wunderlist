@@ -7,9 +7,15 @@ export interface ParsedPost {
   thumb: string;
   username: string;
   likes: number;
+  requiresManualEntry?: false;
 }
 
-export async function parseUrl(url: string): Promise<ParsedPost> {
+export interface ManualEntryNeeded {
+  requiresManualEntry: true;
+  platform: string;
+}
+
+export async function parseUrl(url: string): Promise<ParsedPost | ManualEntryNeeded> {
   const res = await fetch(`${API_BASE}/api/parse-url`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -18,7 +24,7 @@ export async function parseUrl(url: string): Promise<ParsedPost> {
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   const data = await res.json();
   if (data.error) throw new Error(data.error);
-  return data as ParsedPost;
+  return data as ParsedPost | ManualEntryNeeded;
 }
 
 export interface ItinerarySlot {

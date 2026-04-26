@@ -146,6 +146,8 @@ export default function App() {
   const [shareModal, setShareModal] = useState(false);
   const [pastedUrl, setPastedUrl]   = useState("");
   const [urlLoading, setUrlLoading] = useState(false);
+  const [manualEntry, setManualEntry] = useState(null); // { platform, pendingUrl }
+  const [manualLocation, setManualLocation] = useState("");
   const [toast, setToast]           = useState(null);
   const [hoveredDest, setHoveredDest] = useState(null);
   const toastRef = useRef();
@@ -184,11 +186,30 @@ export default function App() {
       });
       const meta = await res.json();
       if (meta.error) throw new Error(meta.error);
-      addPost({ url: pastedUrl.trim(), ...meta });
-    } catch (err) {
+      if (meta.requiresManualEntry) {
+        setManualEntry({ platform: meta.platform || "that link", pendingUrl: pastedUrl.trim() });
+        setManualLocation("");
+      } else {
+        addPost({ url: pastedUrl.trim(), ...meta });
+      }
+    } catch {
       showToast("⚠️ Couldn't fetch that URL — try another link", false);
     }
     setUrlLoading(false);
+  };
+
+  const handleManualSave = () => {
+    if (!manualLocation.trim() || !manualEntry) return;
+    addPost({
+      url: manualEntry.pendingUrl,
+      location: manualLocation.trim(),
+      caption: `Post saved from ${manualEntry.platform}`,
+      thumb: "",
+      username: "",
+      likes: 0,
+    });
+    setManualEntry(null);
+    setManualLocation("");
   };
 
   const toggleStar = (dk, id) => setStarred(p => { const k=`${dk}::${id}`,n={...p}; n[k]?delete n[k]:(n[k]=true); return n; });
@@ -315,16 +336,41 @@ Return this exact JSON structure (no other text):
               </div>
             </div>
 
-            {/* Web paste fallback */}
-            <div style={{fontSize:11,letterSpacing:".1em",textTransform:"uppercase",color:"#4A4440",marginBottom:10}}>Or paste a link (web)</div>
-            <div style={{display:"flex",gap:8,marginBottom:16}}>
-              <input value={pastedUrl} onChange={e=>setPastedUrl(e.target.value)} onKeyDown={e=>e.key==="Enter"&&handlePaste()} placeholder="https://www.instagram.com/p/…"
-                style={{flex:1,padding:"12px 14px",borderRadius:12,background:"rgba(255,255,255,.05)",border:"1px solid rgba(255,255,255,.1)",color:"#EAE6DC",fontSize:14,outline:"none"}}/>
-              <button onClick={handlePaste} disabled={!pastedUrl.trim()||urlLoading} className="gold" style={{padding:"12px 18px",fontSize:13,borderRadius:12,opacity:pastedUrl.trim()&&!urlLoading?1:.35}}>
-                {urlLoading?"…":"Save"}
-              </button>
-            </div>
-            <button onClick={()=>setShareModal(false)} className="ghost" style={{width:"100%",padding:"12px",fontSize:13,borderRadius:12,fontFamily:"'DM Sans',sans-serif"}}>Close</button>
+            {/* Manual location prompt — shown when auto-detection fails */}
+            {manualEntry ? (
+              <div>
+                <div style={{fontSize:12,color:"#C9A96E",marginBottom:10}}>
+                  We couldn't auto-detect this {manualEntry.platform} post — just tell us where it was:
+                </div>
+                <div style={{display:"flex",gap:8,marginBottom:16}}>
+                  <input
+                    value={manualLocation}
+                    onChange={e=>setManualLocation(e.target.value)}
+                    onKeyDown={e=>e.key==="Enter"&&handleManualSave()}
+                    placeholder="e.g. Bondi Beach, Sydney"
+                    autoFocus
+                    style={{flex:1,padding:"12px 14px",borderRadius:12,background:"rgba(255,255,255,.05)",border:"1px solid rgba(201,169,110,.3)",color:"#EAE6DC",fontSize:14,outline:"none"}}
+                  />
+                  <button onClick={handleManualSave} disabled={!manualLocation.trim()} className="gold" style={{padding:"12px 18px",fontSize:13,borderRadius:12,opacity:manualLocation.trim()?1:.35}}>
+                    Save
+                  </button>
+                </div>
+                <button onClick={()=>setManualEntry(null)} className="ghost" style={{width:"100%",padding:"12px",fontSize:13,borderRadius:12,fontFamily:"'DM Sans',sans-serif"}}>← Try a different link</button>
+              </div>
+            ) : (
+              <div>
+                {/* Web paste fallback */}
+                <div style={{fontSize:11,letterSpacing:".1em",textTransform:"uppercase",color:"#4A4440",marginBottom:10}}>Or paste a link (web)</div>
+                <div style={{display:"flex",gap:8,marginBottom:16}}>
+                  <input value={pastedUrl} onChange={e=>setPastedUrl(e.target.value)} onKeyDown={e=>e.key==="Enter"&&handlePaste()} placeholder="https://www.instagram.com/p/…"
+                    style={{flex:1,padding:"12px 14px",borderRadius:12,background:"rgba(255,255,255,.05)",border:"1px solid rgba(255,255,255,.1)",color:"#EAE6DC",fontSize:14,outline:"none"}}/>
+                  <button onClick={handlePaste} disabled={!pastedUrl.trim()||urlLoading} className="gold" style={{padding:"12px 18px",fontSize:13,borderRadius:12,opacity:pastedUrl.trim()&&!urlLoading?1:.35}}>
+                    {urlLoading?"…":"Save"}
+                  </button>
+                </div>
+                <button onClick={()=>setShareModal(false)} className="ghost" style={{width:"100%",padding:"12px",fontSize:13,borderRadius:12,fontFamily:"'DM Sans',sans-serif"}}>Close</button>
+              </div>
+            )}
           </div>
         </div>
       )}

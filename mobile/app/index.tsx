@@ -25,10 +25,12 @@ export default function HomeScreen() {
   const [dests, setDests]           = useState<Destination[]>([]);
   const [starred, setStarred]       = useState<Record<string, boolean>>({});
   const [loading, setLoading]       = useState(true);
-  const [shareModal, setShareModal] = useState(false);
-  const [pastedUrl, setPastedUrl]   = useState("");
-  const [urlLoading, setUrlLoading] = useState(false);
-  const [toast, setToast]           = useState<string | null>(null);
+  const [shareModal, setShareModal]     = useState(false);
+  const [pastedUrl, setPastedUrl]       = useState("");
+  const [urlLoading, setUrlLoading]     = useState(false);
+  const [toast, setToast]               = useState<string | null>(null);
+  const [manualEntry, setManualEntry]   = useState<{ platform: string; pendingUrl: string } | null>(null);
+  const [manualLocation, setManualLocation] = useState("");
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Load from storage on mount
@@ -41,8 +43,29 @@ export default function HomeScreen() {
   // Handle share intent from Instagram / other apps
   useEffect(() => {
     if (!hasShareIntent || !shareIntent) return;
-    const url = shareIntent.webUrl ?? shareIntent.text ?? "";
-    if (url) handleSaveUrl(url.trim());
+
+    const webUrl = shareIntent.webUrl ?? "";
+    const text   = shareIntent.text   ?? "";
+
+    // If text is non-URL content (i.e. the user shared a caption + link),
+    // extract the destination from the text directly — no API call needed.
+    const isUrl = (s: string) => /^https?:\/\//i.test(s.trim());
+    if (text && !isUrl(text)) {
+      // text contains caption; webUrl has the link (or text has embedded URL)
+      const urlMatch = text.match(/https?:\/\/[^\s]+/);
+      handleSavePost({
+        url: urlMatch?.[0] ?? webUrl ?? text,
+        location: "",
+        caption: text.replace(/https?:\/\/[^\s]+/g, "").trim(),
+        thumb: "",
+        username: "",
+        likes: 0,
+      });
+    } else {
+      const url = webUrl || (isUrl(text) ? text : "");
+      if (url) handleSaveUrl(url.trim());
+    }
+
     resetShareIntent();
   }, [hasShareIntent, shareIntent]);
 
@@ -52,7 +75,7 @@ export default function HomeScreen() {
     toastTimer.current = setTimeout(() => setToast(null), 3000);
   };
 
-  const addPost = async (raw: Omit<Post, "id" | "savedAt" | "category">) => {
+  const handleSavePost = async (raw: Omit<Post, "id" | "savedAt" | "category">) => {
     const post: Post = {
       ...raw,
       id: Date.now(),
@@ -67,6 +90,8 @@ export default function HomeScreen() {
     showToast(`✅ Saved to ${d.flag} ${d.name}`);
     setShareModal(false);
     setPastedUrl("");
+    setManualEntry(null);
+    setManualLocation("");
   };
 
   const handleSaveUrl = async (url: string) => {
@@ -74,11 +99,29 @@ export default function HomeScreen() {
     setUrlLoading(true);
     try {
       const meta = await parseUrl(url);
-      await addPost({ url, ...meta });
+      if ("requiresManualEntry" in meta && meta.requiresManualEntry) {
+        setShareModal(true);
+        setManualEntry({ platform: meta.platform, pendingUrl: url });
+        setManualLocation("");
+      } else {
+        await handleSavePost({ url, ...meta });
+      }
     } catch {
       showToast("⚠️ Couldn't fetch that URL");
     }
     setUrlLoading(false);
+  };
+
+  const handleManualSave = () => {
+    if (!manualLocation.trim() || !manualEntry) return;
+    handleSavePost({
+      url: manualEntry.pendingUrl,
+      location: manualLocation.trim(),
+      caption: `Post saved from ${manualEntry.platform}`,
+      thumb: "",
+      username: "",
+      likes: 0,
+    });
   };
 
   const starCount = (destKey: string) =>
@@ -95,7 +138,7 @@ export default function HomeScreen() {
   };
 
   const handleLoadSample = async () => {
-    const sample = DEMO_POSTS.map(p => ({ ...p, category: classify(p.caption) })) as Post[];
+    const sample = DEMO_POSTS.map(p => ({ ...p, id: p.id ?? Date.now() + Math.random(), savedAt: p.savedAt ?? new Date().toISOString().slice(0,10), category: classify(p.caption) })) as Post[];
     setPosts(sample); setDests(buildDests(sample));
     await savePosts(sample);
     showToast("✅ Sample destinations loaded");
@@ -116,39 +159,71 @@ export default function HomeScreen() {
       {/* SHARE MODAL */}
       {shareModal && (
         <View style={s.modalOverlay}>
-          <Pressable style={StyleSheet.absoluteFill} onPress={() => setShareModal(false)} />
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => { setShareModal(false); setManualEntry(null); }} />
           <View style={s.modalBox}>
-            <Text style={s.modalTitle}>Save from Instagram</Text>
-            <Text style={s.modalSub}>
-              On your phone: tap the send icon on any post → scroll the share sheet → tap Wunderlist.
-              {"\n\n"}Or paste a link below:
-            </Text>
-            <View style={s.row}>
-              <TextInput
-                style={s.input}
-                value={pastedUrl}
-                onChangeText={setPastedUrl}
-                placeholder="https://www.instagram.com/p/…"
-                placeholderTextColor="#3A3530"
-                onSubmitEditing={() => handleSaveUrl(pastedUrl.trim())}
-                autoCapitalize="none"
-                autoCorrect={false}
-                keyboardType="url"
-              />
-              <Pressable
-                style={[s.goldBtn, { opacity: pastedUrl && !urlLoading ? 1 : 0.35 }]}
-                onPress={() => handleSaveUrl(pastedUrl.trim())}
-                disabled={!pastedUrl || urlLoading}
-              >
-                {urlLoading
-                  ? <ActivityIndicator color={BG} size="small" />
-                  : <Text style={s.goldBtnText}>Save</Text>
-                }
-              </Pressable>
-            </View>
-            <Pressable style={s.ghostBtn} onPress={() => setShareModal(false)}>
-              <Text style={s.ghostBtnText}>Close</Text>
-            </Pressable>
+            {manualEntry ? (
+              <>
+                <Text style={s.modalTitle}>Where was this?</Text>
+                <Text style={s.modalSub}>
+                  We couldn't auto-detect this {manualEntry.platform} post. Just type the destination and we'll sort it automatically.
+                </Text>
+                <View style={s.row}>
+                  <TextInput
+                    style={s.input}
+                    value={manualLocation}
+                    onChangeText={setManualLocation}
+                    placeholder="e.g. Bondi Beach, Sydney"
+                    placeholderTextColor="#3A3530"
+                    onSubmitEditing={handleManualSave}
+                    autoFocus
+                  />
+                  <Pressable
+                    style={[s.goldBtn, { opacity: manualLocation.trim() ? 1 : 0.35 }]}
+                    onPress={handleManualSave}
+                    disabled={!manualLocation.trim()}
+                  >
+                    <Text style={s.goldBtnText}>Save</Text>
+                  </Pressable>
+                </View>
+                <Pressable style={s.ghostBtn} onPress={() => setManualEntry(null)}>
+                  <Text style={s.ghostBtnText}>← Try a different link</Text>
+                </Pressable>
+              </>
+            ) : (
+              <>
+                <Text style={s.modalTitle}>Save from Instagram</Text>
+                <Text style={s.modalSub}>
+                  On your phone: tap the send icon on any post → scroll the share sheet → tap Wunderlist.
+                  {"\n\n"}Or paste a link below:
+                </Text>
+                <View style={s.row}>
+                  <TextInput
+                    style={s.input}
+                    value={pastedUrl}
+                    onChangeText={setPastedUrl}
+                    placeholder="https://www.instagram.com/p/…"
+                    placeholderTextColor="#3A3530"
+                    onSubmitEditing={() => handleSaveUrl(pastedUrl.trim())}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    keyboardType="url"
+                  />
+                  <Pressable
+                    style={[s.goldBtn, { opacity: pastedUrl && !urlLoading ? 1 : 0.35 }]}
+                    onPress={() => handleSaveUrl(pastedUrl.trim())}
+                    disabled={!pastedUrl || urlLoading}
+                  >
+                    {urlLoading
+                      ? <ActivityIndicator color={BG} size="small" />
+                      : <Text style={s.goldBtnText}>Save</Text>
+                    }
+                  </Pressable>
+                </View>
+                <Pressable style={s.ghostBtn} onPress={() => setShareModal(false)}>
+                  <Text style={s.ghostBtnText}>Close</Text>
+                </Pressable>
+              </>
+            )}
           </View>
         </View>
       )}

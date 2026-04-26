@@ -1,14 +1,6 @@
-// Extracts OpenGraph metadata from a URL.
-// Instagram and TikTok block server-side fetches, so we fall back to
-// demo data for those domains so the "paste a link" flow still works in testing.
-
-const DEMO_FALLBACKS = [
-  { location: "Shibuya, Tokyo, Japan",        caption: "🌃 Omoide Yokocho (Memory Lane) — tiny yakitori stalls, sake, smoky grills at 1am. Pure uncut Tokyo. #Tokyo #Yakitori", thumb: "https://images.unsplash.com/photo-1536098561742-ca998e48cbcc?w=600&h=400&fit=crop", username: "@nocturnal.food", likes: 34200 },
-  { location: "Ubud, Bali, Indonesia",         caption: "Sacred Monkey Forest Sanctuary — 700 monkeys and ancient temples 🌿🐒 Go at 8:30am before the tour buses. #Bali",          thumb: "https://images.unsplash.com/photo-1537996194471-e657df975ab4?w=600&h=400&fit=crop", username: "@wild.dest",       likes: 58900 },
-  { location: "Fitzroy, Melbourne, Australia", caption: "Hosier Lane street art — one of Melbourne's most vibrant living galleries 🎨 Changes weekly. #Melbourne #StreetArt",       thumb: "https://images.unsplash.com/photo-1514395462725-fb4566210144?w=600&h=400&fit=crop", username: "@wallsofmelb",     likes: 21600 },
-  { location: "Gion, Kyoto, Japan",            caption: "Nishiki Tenmangu Shrine hidden inside Nishiki Market — most tourists walk right past it 🏮 #Kyoto #HiddenGem",             thumb: "https://images.unsplash.com/photo-1493976040374-85c8e12f0c0e?w=600&h=400&fit=crop", username: "@kansai.secrets",  likes: 17400 },
-  { location: "Canggu, Bali, Indonesia",       caption: "Tanah Lot sea temple at high tide 🌊⛩️ Get there 30 min before sunset for the perfect silhouette. #Bali",                 thumb: "https://images.unsplash.com/photo-1555400038-63f5ba517a47?w=600&h=400&fit=crop", username: "@bali.at.dusk",    likes: 93200 },
-];
+// Extracts metadata from a URL for saving travel inspiration posts.
+// Platform-specific handlers for Instagram, TikTok, and Twitter/X.
+// Falls back to OpenGraph tag scraping for all other URLs.
 
 function extractOgTag(html, property) {
   const patterns = [
@@ -22,7 +14,99 @@ function extractOgTag(html, property) {
   return "";
 }
 
-const BLOCKED_DOMAINS = ["instagram.com", "tiktok.com", "facebook.com", "twitter.com", "x.com"];
+async function tryInstagram(url) {
+  const match = url.match(/instagram\.com\/(?:p|reel|tv|reels)\/([A-Za-z0-9_-]+)/);
+  if (!match) return null;
+  const shortcode = match[1];
+
+  // Try the public oEmbed endpoint (works for some public posts without auth)
+  try {
+    const oembed = await fetch(
+      `https://www.instagram.com/oembed/?url=https://www.instagram.com/p/${shortcode}/&format=json`,
+      {
+        headers: { "User-Agent": "Twitterbot/1.0" },
+        signal: AbortSignal.timeout(5000),
+      }
+    );
+    if (oembed.ok) {
+      const data = await oembed.json();
+      if (data.title) {
+        return {
+          location: "",
+          caption: data.title,
+          thumb: data.thumbnail_url || "",
+          username: `@${data.author_name || "instagram"}`,
+          likes: 0,
+        };
+      }
+    }
+  } catch {}
+
+  // Try the embed page — designed for iframes, sometimes less restricted
+  try {
+    const embed = await fetch(`https://www.instagram.com/p/${shortcode}/embed/captioned/`, {
+      headers: {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.5",
+        "Referer": "https://www.instagram.com/",
+      },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (embed.ok) {
+      const html = await embed.text();
+      const caption = extractOgTag(html, "description");
+      const image   = extractOgTag(html, "image");
+      if (caption || image) {
+        return { location: "", caption: caption || "", thumb: image || "", username: "@instagram", likes: 0 };
+      }
+    }
+  } catch {}
+
+  return null;
+}
+
+async function tryTikTok(url) {
+  try {
+    const res = await fetch(`https://www.tiktok.com/oembed?url=${encodeURIComponent(url)}`, {
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (!data.title) return null;
+    return {
+      location: "",
+      caption: data.title,
+      thumb: data.thumbnail_url || "",
+      username: `@${data.author_name || "tiktok"}`,
+      likes: 0,
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function tryTwitter(url) {
+  try {
+    const res = await fetch(
+      `https://publish.twitter.com/oembed?url=${encodeURIComponent(url)}&omit_script=true`,
+      { signal: AbortSignal.timeout(8000) }
+    );
+    if (!res.ok) return null;
+    const data = await res.json();
+    const textMatch = data.html?.match(/<p[^>]*>([\s\S]*?)<\/p>/);
+    const caption = textMatch?.[1]?.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim() || "";
+    return {
+      location: "",
+      caption,
+      thumb: "",
+      username: `@${data.author_name || "twitter"}`,
+      likes: 0,
+    };
+  } catch {
+    return null;
+  }
+}
 
 export default async function handler(req, res) {
   if (req.method !== "POST") {
@@ -41,12 +125,26 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: "Invalid URL" });
   }
 
-  // These platforms block server-side fetches — return realistic demo data
-  if (BLOCKED_DOMAINS.some(d => hostname.includes(d))) {
-    const fallback = DEMO_FALLBACKS[Math.floor(Math.random() * DEMO_FALLBACKS.length)];
-    return res.status(200).json(fallback);
+  // Platform-specific handlers
+  if (hostname.includes("instagram.com")) {
+    const result = await tryInstagram(url);
+    if (result) return res.status(200).json(result);
+    return res.status(200).json({ requiresManualEntry: true, platform: "Instagram" });
   }
 
+  if (hostname.includes("tiktok.com")) {
+    const result = await tryTikTok(url);
+    if (result) return res.status(200).json(result);
+    return res.status(200).json({ requiresManualEntry: true, platform: "TikTok" });
+  }
+
+  if (hostname.includes("twitter.com") || hostname.includes("x.com")) {
+    const result = await tryTwitter(url);
+    if (result) return res.status(200).json(result);
+    return res.status(200).json({ requiresManualEntry: true, platform: "X / Twitter" });
+  }
+
+  // General OpenGraph scraping for all other URLs
   try {
     const response = await fetch(url, {
       headers: {
@@ -58,17 +156,14 @@ export default async function handler(req, res) {
 
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
-    const html = await response.text();
-
+    const html        = await response.text();
     const title       = extractOgTag(html, "title")       || extractOgTag(html, "site_name") || hostname;
     const description = extractOgTag(html, "description") || "";
     const image       = extractOgTag(html, "image")       || "";
     const siteName    = extractOgTag(html, "site_name")   || "";
 
     if (!description && !image) {
-      // Nothing useful found — use a fallback
-      const fallback = DEMO_FALLBACKS[Math.floor(Math.random() * DEMO_FALLBACKS.length)];
-      return res.status(200).json(fallback);
+      return res.status(200).json({ requiresManualEntry: true, platform: siteName || hostname });
     }
 
     return res.status(200).json({
@@ -79,8 +174,6 @@ export default async function handler(req, res) {
       likes:    0,
     });
   } catch {
-    // Network error or timeout — fall back to demo data
-    const fallback = DEMO_FALLBACKS[Math.floor(Math.random() * DEMO_FALLBACKS.length)];
-    return res.status(200).json(fallback);
+    return res.status(200).json({ requiresManualEntry: true, platform: hostname });
   }
 }
