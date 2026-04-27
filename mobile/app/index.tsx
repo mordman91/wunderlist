@@ -165,7 +165,7 @@ export default function HomeScreen() {
               <>
                 <Text style={s.modalTitle}>Where was this?</Text>
                 <Text style={s.modalSub}>
-                  We couldn't auto-detect this {manualEntry.platform} post. Just type the destination and we'll sort it automatically.
+                  {manualEntry.platform} doesn't let apps read post details directly — it's a platform restriction. Just type the location and we'll auto-sort and categorise it for you.
                 </Text>
                 <View style={s.row}>
                   <TextInput

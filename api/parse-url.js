@@ -1,6 +1,7 @@
 // Extracts metadata from a URL for saving travel inspiration posts.
-// Platform-specific handlers for Instagram, TikTok, and Twitter/X.
-// Falls back to OpenGraph tag scraping for all other URLs.
+// Instagram, TikTok, Facebook, and Twitter/X block server-side scraping.
+// TikTok has a public oEmbed API; Instagram/Facebook require authentication
+// so we immediately ask the user for the one piece we need: the location.
 
 function extractOgTag(html, property) {
   const patterns = [
@@ -12,58 +13,6 @@ function extractOgTag(html, property) {
     if (m) return m[1].replace(/&amp;/g, "&").replace(/&quot;/g, '"').replace(/&#39;/g, "'").trim();
   }
   return "";
-}
-
-async function tryInstagram(url) {
-  const match = url.match(/instagram\.com\/(?:p|reel|tv|reels)\/([A-Za-z0-9_-]+)/);
-  if (!match) return null;
-  const shortcode = match[1];
-
-  // Try the public oEmbed endpoint (works for some public posts without auth)
-  try {
-    const oembed = await fetch(
-      `https://www.instagram.com/oembed/?url=https://www.instagram.com/p/${shortcode}/&format=json`,
-      {
-        headers: { "User-Agent": "Twitterbot/1.0" },
-        signal: AbortSignal.timeout(5000),
-      }
-    );
-    if (oembed.ok) {
-      const data = await oembed.json();
-      if (data.title) {
-        return {
-          location: "",
-          caption: data.title,
-          thumb: data.thumbnail_url || "",
-          username: `@${data.author_name || "instagram"}`,
-          likes: 0,
-        };
-      }
-    }
-  } catch {}
-
-  // Try the embed page — designed for iframes, sometimes less restricted
-  try {
-    const embed = await fetch(`https://www.instagram.com/p/${shortcode}/embed/captioned/`, {
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.5",
-        "Referer": "https://www.instagram.com/",
-      },
-      signal: AbortSignal.timeout(8000),
-    });
-    if (embed.ok) {
-      const html = await embed.text();
-      const caption = extractOgTag(html, "description");
-      const image   = extractOgTag(html, "image");
-      if (caption || image) {
-        return { location: "", caption: caption || "", thumb: image || "", username: "@instagram", likes: 0 };
-      }
-    }
-  } catch {}
-
-  return null;
 }
 
 async function tryTikTok(url) {
@@ -125,10 +74,9 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: "Invalid URL" });
   }
 
-  // Platform-specific handlers
-  if (hostname.includes("instagram.com")) {
-    const result = await tryInstagram(url);
-    if (result) return res.status(200).json(result);
+  // Instagram and Facebook block all server-side fetching — respond immediately
+  // rather than wasting 8+ seconds on guaranteed failures that produce bad data.
+  if (hostname.includes("instagram.com") || hostname.includes("facebook.com")) {
     return res.status(200).json({ requiresManualEntry: true, platform: "Instagram" });
   }
 

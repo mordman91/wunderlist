@@ -336,12 +336,16 @@ Return this exact JSON structure (no other text):
               </div>
             </div>
 
-            {/* Manual location prompt — shown when auto-detection fails */}
+            {/* Manual location prompt — shown for Instagram (which blocks all server-side access) */}
             {manualEntry ? (
               <div>
-                <div style={{fontSize:12,color:"#C9A96E",marginBottom:10}}>
-                  We couldn't auto-detect this {manualEntry.platform} post — just tell us where it was:
+                <div style={{background:"rgba(201,169,110,.08)",border:"1px solid rgba(201,169,110,.2)",borderRadius:14,padding:"14px 16px",marginBottom:18}}>
+                  <div style={{fontSize:12,color:"#C9A96E",fontWeight:500,marginBottom:4}}>📍 One quick thing</div>
+                  <div style={{fontSize:12,color:"#6A6058",lineHeight:1.6}}>
+                    {manualEntry.platform} doesn't let apps read post content directly — it's a platform restriction, not a bug. Just type where this post was and we'll sort everything else automatically.
+                  </div>
                 </div>
+                <label style={{fontSize:10,letterSpacing:".15em",textTransform:"uppercase",color:"#5A5448",display:"block",marginBottom:8}}>Where was this post?</label>
                 <div style={{display:"flex",gap:8,marginBottom:16}}>
                   <input
                     value={manualLocation}
