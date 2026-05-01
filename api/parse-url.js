@@ -1,7 +1,7 @@
 // Extracts metadata from a URL for saving travel inspiration posts.
-// Instagram, TikTok, Facebook, and Twitter/X block server-side scraping.
-// TikTok has a public oEmbed API; Instagram/Facebook require authentication
-// so we immediately ask the user for the one piece we need: the location.
+// Instagram: uses the official Meta oEmbed API (requires INSTAGRAM_APP_TOKEN env var).
+// TikTok: public oEmbed, no auth needed.
+// Everything else: OpenGraph tag scraping.
 
 function extractOgTag(html, property) {
   const patterns = [
@@ -15,6 +15,31 @@ function extractOgTag(html, property) {
   return "";
 }
 
+// Official Meta oEmbed — returns real caption, author, and thumbnail for public posts.
+// Token format: "APP_ID|APP_SECRET" from your Meta developer app.
+// Docs: https://developers.facebook.com/docs/instagram/oembed
+async function tryInstagramOEmbed(url) {
+  const token = process.env.INSTAGRAM_APP_TOKEN;
+  if (!token) return null;
+
+  try {
+    const endpoint = `https://graph.facebook.com/v22.0/instagram_oembed?url=${encodeURIComponent(url)}&fields=title,author_name,thumbnail_url&access_token=${token}`;
+    const res = await fetch(endpoint, { signal: AbortSignal.timeout(8000) });
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (data.error || !data.title) return null;
+    return {
+      location: "",
+      caption:  data.title,
+      thumb:    data.thumbnail_url || "",
+      username: `@${data.author_name || "instagram"}`,
+      likes:    0,
+    };
+  } catch {
+    return null;
+  }
+}
+
 async function tryTikTok(url) {
   try {
     const res = await fetch(`https://www.tiktok.com/oembed?url=${encodeURIComponent(url)}`, {
@@ -25,10 +50,10 @@ async function tryTikTok(url) {
     if (!data.title) return null;
     return {
       location: "",
-      caption: data.title,
-      thumb: data.thumbnail_url || "",
+      caption:  data.title,
+      thumb:    data.thumbnail_url || "",
       username: `@${data.author_name || "tiktok"}`,
-      likes: 0,
+      likes:    0,
     };
   } catch {
     return null;
@@ -48,9 +73,9 @@ async function tryTwitter(url) {
     return {
       location: "",
       caption,
-      thumb: "",
+      thumb:    "",
       username: `@${data.author_name || "twitter"}`,
-      likes: 0,
+      likes:    0,
     };
   } catch {
     return null;
@@ -74,9 +99,10 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: "Invalid URL" });
   }
 
-  // Instagram and Facebook block all server-side fetching — respond immediately
-  // rather than wasting 8+ seconds on guaranteed failures that produce bad data.
   if (hostname.includes("instagram.com") || hostname.includes("facebook.com")) {
+    const result = await tryInstagramOEmbed(url);
+    if (result) return res.status(200).json(result);
+    // No token set or post is private — ask for location only
     return res.status(200).json({ requiresManualEntry: true, platform: "Instagram" });
   }
 
