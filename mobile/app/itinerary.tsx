@@ -12,7 +12,7 @@ import {
   fmtDate, parseDate, Post,
 } from "@/utils/classify";
 import { generateItinerary, Itinerary } from "@/utils/api";
-import { loadPosts, loadStarred } from "@/utils/storage";
+import { loadPosts } from "@/utils/storage";
 
 const GOLD = "#C9A96E";
 const BG   = "#07070F";
@@ -23,20 +23,18 @@ export default function ItineraryScreen() {
   const { key }     = useLocalSearchParams<{ key: string }>();
 
   const [dest, setDest]           = useState<Destination | null>(null);
-  const [starred, setStarred]     = useState<Record<string, boolean>>({});
   const [itinerary, setItinerary] = useState<Itinerary | null>(null);
   const [generating, setGenerating] = useState(false);
   const [showTrip, setShowTrip]   = useState(true);
   const [trip, setTrip]           = useState({ origin: "", arrival: "", departure: "", travelers: "2", notes: "" });
 
   useEffect(() => {
-    Promise.all([loadPosts(), loadStarred()]).then(([posts, s]) => {
+    loadPosts().then(posts => {
       setDest(buildDests(posts).find(d => d.key === key) ?? null);
-      setStarred(s);
     });
   }, [key]);
 
-  const starCount = () => Object.keys(starred).filter(k => k.startsWith(key + "::")).length;
+  const starCount = () => dest?.items.filter(i => i.starred).length ?? 0;
 
   const arrDate = parseDate(trip.arrival);
   const depDate = parseDate(trip.departure);
@@ -49,7 +47,7 @@ export default function ItineraryScreen() {
     setItinerary(null);
 
     const allItems = dest.items;
-    const pool     = allItems.filter(i => starred[`${key}::${i.id}`]);
+    const pool     = allItems.filter(i => i.starred);
     const use      = pool.length > 0 ? pool : allItems;
     const cap      = Math.max(1, Math.min(numDays ?? 3, 10));
     const labels   = Array.from({ length: cap }, (_, i) =>

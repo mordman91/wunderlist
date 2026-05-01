@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import { supabase } from "./lib/supabase";
 
 /* ═══════════════════════════════════════════════════════════
    WUNDERLIST  —  Your travel inspiration, organised
@@ -128,17 +129,63 @@ const daysBetween = (a, b) => a && b ? Math.round((b - a) / 86400000) : null;
 const fmtDate     = d => d ? d.toLocaleDateString("en-US", { weekday:"short", month:"short", day:"numeric" }) : "";
 const addDays     = (d, n) => { const r = new Date(d); r.setDate(r.getDate() + n); return r; };
 
-function loadFromStorage(key, fallback) {
-  try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : fallback; } catch { return fallback; }
+function rowToPost(row) {
+  return {
+    id:       row.id,
+    url:      row.url      || "",
+    location: row.location || "",
+    caption:  row.caption  || "",
+    thumb:    row.thumb    || "",
+    username: row.username || "",
+    likes:    row.likes    || 0,
+    savedAt:  row.saved_at || new Date().toISOString().slice(0,10),
+    starred:  row.starred  || false,
+  };
 }
 
 export default function App() {
-  const [posts, setPosts]           = useState(() => loadFromStorage("wl_posts", []));
-  const [dests, setDests]           = useState(() => buildDests(loadFromStorage("wl_posts", [])));
+  // ── Auth ──────────────────────────────────────────────────────────────────
+  const [user, setUser]               = useState(undefined); // undefined = loading
+  const [authMode, setAuthMode]       = useState("signin");
+  const [authEmail, setAuthEmail]     = useState("");
+  const [authPassword, setAuthPassword] = useState("");
+  const [authLoading, setAuthLoading] = useState(false);
+  const [authError, setAuthError]     = useState(null);
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setUser(session?.user ?? null);
+      if (session?.user) loadUserPosts();
+    });
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_e, session) => {
+      setUser(session?.user ?? null);
+      if (session?.user) loadUserPosts();
+      else { setPosts([]); setDests([]); }
+    });
+    return () => subscription.unsubscribe();
+  }, []);
+
+  const loadUserPosts = async () => {
+    const { data } = await supabase.from("posts").select("*").order("created_at", { ascending: false });
+    if (data) { const p = data.map(rowToPost); setPosts(p); setDests(buildDests(p)); }
+  };
+
+  const handleAuth = async () => {
+    setAuthLoading(true); setAuthError(null);
+    const { error } = authMode === "signin"
+      ? await supabase.auth.signInWithPassword({ email: authEmail, password: authPassword })
+      : await supabase.auth.signUp({ email: authEmail, password: authPassword });
+    setAuthLoading(false);
+    if (error) setAuthError(error.message);
+    else if (authMode === "signup") setAuthError("✉️ Check your email to confirm your account, then sign in.");
+  };
+
+  // ── App state ─────────────────────────────────────────────────────────────
+  const [posts, setPosts]           = useState([]);
+  const [dests, setDests]           = useState([]);
   const [screen, setScreen]         = useState("home");
   const [activeDest, setActiveDest] = useState(null);
   const [catFilter, setCatFilter]   = useState("all");
-  const [starred, setStarred]       = useState(() => loadFromStorage("wl_starred", {}));
   const [tripModal, setTripModal]   = useState(false);
   const [trip, setTrip]             = useState({ origin:"", arrival:"", departure:"", travelers:"2", notes:"" });
   const [itinerary, setItinerary]   = useState(null);
@@ -146,15 +193,11 @@ export default function App() {
   const [shareModal, setShareModal] = useState(false);
   const [pastedUrl, setPastedUrl]   = useState("");
   const [urlLoading, setUrlLoading] = useState(false);
-  const [manualEntry, setManualEntry] = useState(null); // { platform, pendingUrl }
+  const [manualEntry, setManualEntry]       = useState(null);
   const [manualLocation, setManualLocation] = useState("");
   const [toast, setToast]           = useState(null);
   const [hoveredDest, setHoveredDest] = useState(null);
   const toastRef = useRef();
-
-  // Persist saves and stars to localStorage
-  useEffect(() => { try { localStorage.setItem("wl_posts", JSON.stringify(posts)); } catch {} }, [posts]);
-  useEffect(() => { try { localStorage.setItem("wl_starred", JSON.stringify(starred)); } catch {} }, [starred]);
 
   const showToast = (msg, ok = true) => {
     clearTimeout(toastRef.current);
@@ -162,18 +205,30 @@ export default function App() {
     toastRef.current = setTimeout(() => setToast(null), 3000);
   };
 
-  const addPost = useCallback((raw) => {
-    const post = { ...raw, id: Date.now() + Math.random(), savedAt: new Date().toISOString().slice(0,10) };
-    setPosts(prev => {
-      const next = [post, ...prev];
-      setDests(buildDests(next));
-      return next;
-    });
+  const addPost = useCallback(async (raw) => {
+    if (!user) return;
+    const category = classify(raw.caption || "");
+    const savedAt  = new Date().toISOString().slice(0,10);
+    const { data, error } = await supabase.from("posts").insert({
+      user_id:  user.id,
+      url:      raw.url      || "",
+      location: raw.location || "",
+      caption:  raw.caption  || "",
+      thumb:    raw.thumb    || "",
+      username: raw.username || "",
+      likes:    raw.likes    || 0,
+      category,
+      starred:  false,
+      saved_at: savedAt,
+    }).select().single();
+    if (error || !data) { showToast("⚠️ Couldn't save post", false); return; }
+    const post = rowToPost(data);
+    setPosts(prev => { const next = [post, ...prev]; setDests(buildDests(next)); return next; });
     const d = extractDest(post.location, post.caption);
     showToast(`✅ Saved to ${d.flag} ${d.name}`);
-    setShareModal(false);
-    setPastedUrl("");
-  }, []);
+    setShareModal(false); setPastedUrl("");
+    setManualEntry(null); setManualLocation("");
+  }, [user]);
 
   const handlePaste = async () => {
     if (!pastedUrl.trim()) return;
@@ -200,21 +255,20 @@ export default function App() {
 
   const handleManualSave = () => {
     if (!manualLocation.trim() || !manualEntry) return;
-    addPost({
-      url: manualEntry.pendingUrl,
-      location: manualLocation.trim(),
-      caption: `Post saved from ${manualEntry.platform}`,
-      thumb: "",
-      username: "",
-      likes: 0,
-    });
-    setManualEntry(null);
-    setManualLocation("");
+    addPost({ url: manualEntry.pendingUrl, location: manualLocation.trim(),
+      caption: `Post saved from ${manualEntry.platform}`, thumb: "", username: "", likes: 0 });
   };
 
-  const toggleStar = (dk, id) => setStarred(p => { const k=`${dk}::${id}`,n={...p}; n[k]?delete n[k]:(n[k]=true); return n; });
-  const isStar     = (dk, id) => !!starred[`${dk}::${id}`];
-  const starCount  = (dk) => Object.keys(starred).filter(k => k.startsWith(dk + "::")).length;
+  const toggleStar = async (dk, id) => {
+    const post = posts.find(p => p.id === id);
+    if (!post) return;
+    const newStarred = !post.starred;
+    const next = posts.map(p => p.id === id ? { ...p, starred: newStarred } : p);
+    setPosts(next); setDests(buildDests(next));
+    await supabase.from("posts").update({ starred: newStarred }).eq("id", id);
+  };
+  const isStar    = (_dk, id) => posts.find(p => p.id === id)?.starred ?? false;
+  const starCount = (dk) => dests.find(d => d.key === dk)?.items.filter(i => i.starred).length ?? 0;
 
   const destObj  = dests.find(d => d.key === activeDest);
   const allItems = destObj?.items || [];
@@ -289,6 +343,40 @@ Return this exact JSON structure (no other text):
     setGenerating(false);
   };
 
+  // ── Loading session ──────────────────────────────────────────────────────
+  if (user === undefined) {
+    return <div style={{minHeight:"100vh",background:"#07070F",display:"flex",alignItems:"center",justifyContent:"center",color:"#C9A96E",fontSize:14}}>Loading…</div>;
+  }
+
+  // ── Auth screen ───────────────────────────────────────────────────────────
+  if (!user) {
+    return (
+      <div style={{minHeight:"100vh",background:"#07070F",color:"#EAE6DC",fontFamily:"'DM Sans','Trebuchet MS',sans-serif",display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
+        <style>{`@import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;1,300&family=DM+Sans:opsz,wght@9..40,300;9..40,400;9..40,500&display=swap');*{box-sizing:border-box;margin:0;padding:0}.gold{background:linear-gradient(135deg,#C9A96E,#8A6A38);border:none;color:#07070F;font-weight:700;letter-spacing:.08em;cursor:pointer;text-transform:uppercase;transition:opacity .2s}.gold:hover{opacity:.88}.ghost{background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);color:#8A8070;cursor:pointer;transition:all .2s}.ghost:hover{background:rgba(255,255,255,.09);color:#C9A96E}input{font-family:'DM Sans',sans-serif;color-scheme:dark}`}</style>
+        <div style={{maxWidth:400,width:"100%"}}>
+          <div style={{fontFamily:"'Cormorant Garamond',serif",fontSize:42,fontWeight:300,background:"linear-gradient(135deg,#EAE6DC,#C9A96E)",WebkitBackgroundClip:"text",WebkitTextFillColor:"transparent",marginBottom:6,textAlign:"center"}}>wunderlist</div>
+          <div style={{color:"#4A4440",fontSize:13,textAlign:"center",marginBottom:40}}>Your travel inspiration, organised</div>
+          <div style={{background:"#10101E",border:"1px solid rgba(255,255,255,.1)",borderRadius:24,padding:"32px 28px"}}>
+            <div style={{fontSize:20,fontWeight:300,marginBottom:24}}>{authMode==="signin"?"Sign in":"Create account"}</div>
+            <input value={authEmail} onChange={e=>setAuthEmail(e.target.value)} placeholder="Email address" type="email" autoComplete="email"
+              style={{width:"100%",padding:"13px 16px",borderRadius:12,background:"rgba(255,255,255,.05)",border:"1px solid rgba(255,255,255,.1)",color:"#EAE6DC",fontSize:15,outline:"none",marginBottom:12,display:"block"}}/>
+            <input value={authPassword} onChange={e=>setAuthPassword(e.target.value)} onKeyDown={e=>e.key==="Enter"&&handleAuth()} placeholder="Password" type="password" autoComplete={authMode==="signup"?"new-password":"current-password"}
+              style={{width:"100%",padding:"13px 16px",borderRadius:12,background:"rgba(255,255,255,.05)",border:"1px solid rgba(255,255,255,.1)",color:"#EAE6DC",fontSize:15,outline:"none",marginBottom:16,display:"block"}}/>
+            {authError&&<div style={{fontSize:12,color:authError.startsWith("✉️")?"#C9A96E":"#E07B54",marginBottom:14,lineHeight:1.6}}>{authError}</div>}
+            <button onClick={handleAuth} disabled={authLoading||!authEmail||!authPassword} className="gold"
+              style={{width:"100%",padding:"14px",fontSize:13,borderRadius:12,marginBottom:16,opacity:authLoading||!authEmail||!authPassword?.5:1}}>
+              {authLoading?"…":authMode==="signin"?"Sign in":"Create account"}
+            </button>
+            <button onClick={()=>{setAuthMode(m=>m==="signin"?"signup":"signin");setAuthError(null);}} style={{width:"100%",background:"none",border:"none",color:"#5A5448",fontSize:13,cursor:"pointer",padding:"4px"}}>
+              {authMode==="signin"?"No account? Create one →":"Already have an account? Sign in →"}
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Main app ──────────────────────────────────────────────────────────────
   return (
     <div style={{minHeight:"100vh",background:"#07070F",color:"#EAE6DC",fontFamily:"'DM Sans','Trebuchet MS',sans-serif",overflowX:"hidden",position:"relative"}}>
       <style>{`
@@ -439,8 +527,9 @@ Return this exact JSON structure (no other text):
               <div style={{display:"flex",gap:10,alignItems:"center"}}>
                 <span style={{fontSize:12,color:"#3A3530"}}>{posts.length} saves · {dests.length} destinations</span>
                 {posts.length > 0 && (
-                  <button onClick={()=>{ if(window.confirm("Clear all saves? This can't be undone.")) { setPosts([]); setDests([]); setStarred({}); }}} className="ghost" style={{padding:"8px 14px",fontSize:11,borderRadius:9,fontFamily:"'DM Sans',sans-serif"}}>Clear</button>
+                  <button onClick={async ()=>{ if(window.confirm("Clear all saves? This can't be undone.")) { if(user) await supabase.from("posts").delete().eq("user_id",user.id); setPosts([]); setDests([]); }}} className="ghost" style={{padding:"8px 14px",fontSize:11,borderRadius:9,fontFamily:"'DM Sans',sans-serif"}}>Clear</button>
                 )}
+                <button onClick={()=>supabase.auth.signOut()} className="ghost" style={{padding:"8px 14px",fontSize:11,borderRadius:9,fontFamily:"'DM Sans',sans-serif"}}>Sign out</button>
                 <button onClick={()=>setShareModal(true)} className="gold" style={{padding:"10px 20px",fontSize:12,borderRadius:11,fontFamily:"'DM Sans',sans-serif"}}>+ Save a Post</button>
               </div>
             </nav>
@@ -471,7 +560,12 @@ Return this exact JSON structure (no other text):
                   <p style={{color:"#4A4440",fontSize:14,lineHeight:1.75,maxWidth:380,margin:"0 auto 28px"}}>
                     Paste an Instagram post link above to start building your travel collection — or load some sample destinations to explore how it works.
                   </p>
-                  <button onClick={()=>{ setPosts(DEMO); setDests(buildDests(DEMO)); }} className="ghost" style={{padding:"12px 28px",fontSize:13,borderRadius:14,fontFamily:"'DM Sans',sans-serif",color:"#C9A96E",borderColor:"rgba(201,169,110,.3)"}}>
+                  <button onClick={async ()=>{
+                    if(!user) return;
+                    const rows = DEMO.map(p=>({ user_id:user.id, url:p.url||"", location:p.location, caption:p.caption, thumb:p.thumb, username:p.username, likes:p.likes, category:classify(p.caption), starred:false, saved_at:p.savedAt }));
+                    const {data} = await supabase.from("posts").insert(rows).select();
+                    if(data){ const loaded=data.map(rowToPost); setPosts(loaded); setDests(buildDests(loaded)); }
+                  }} className="ghost" style={{padding:"12px 28px",fontSize:13,borderRadius:14,fontFamily:"'DM Sans',sans-serif",color:"#C9A96E",borderColor:"rgba(201,169,110,.3)"}}>
                     Load sample destinations →
                   </button>
                 </div>

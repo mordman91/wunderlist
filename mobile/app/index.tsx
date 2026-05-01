@@ -11,7 +11,8 @@ import { useShareIntent } from "expo-share-intent";
 import { CATEGORIES, DEMO_POSTS } from "@/constants";
 import { buildDests, classify, extractDest, Destination, Post } from "@/utils/classify";
 import { parseUrl } from "@/utils/api";
-import { clearAll, loadPosts, loadStarred, savePosts, saveStarred } from "@/utils/storage";
+import { supabase } from "@/utils/supabase";
+import { loadPosts, insertPost, deleteAllPosts, insertDemoPosts } from "@/utils/storage";
 
 const GOLD = "#C9A96E";
 const BG   = "#07070F";
@@ -23,20 +24,25 @@ export default function HomeScreen() {
 
   const [posts, setPosts]           = useState<Post[]>([]);
   const [dests, setDests]           = useState<Destination[]>([]);
-  const [starred, setStarred]       = useState<Record<string, boolean>>({});
+  const [userId, setUserId]         = useState<string | null>(null);
   const [loading, setLoading]       = useState(true);
-  const [shareModal, setShareModal]     = useState(false);
-  const [pastedUrl, setPastedUrl]       = useState("");
-  const [urlLoading, setUrlLoading]     = useState(false);
-  const [toast, setToast]               = useState<string | null>(null);
-  const [manualEntry, setManualEntry]   = useState<{ platform: string; pendingUrl: string } | null>(null);
+  const [shareModal, setShareModal] = useState(false);
+  const [pastedUrl, setPastedUrl]   = useState("");
+  const [urlLoading, setUrlLoading] = useState(false);
+  const [toast, setToast]           = useState<string | null>(null);
+  const [manualEntry, setManualEntry]       = useState<{ platform: string; pendingUrl: string } | null>(null);
   const [manualLocation, setManualLocation] = useState("");
   const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Load from storage on mount
+  // Get user id and load their posts on mount
   useEffect(() => {
-    Promise.all([loadPosts(), loadStarred()]).then(([p, s]) => {
-      setPosts(p); setDests(buildDests(p)); setStarred(s); setLoading(false);
+    supabase.auth.getUser().then(({ data: { user } }) => {
+      if (user) {
+        setUserId(user.id);
+        loadPosts().then(p => {
+          setPosts(p); setDests(buildDests(p)); setLoading(false);
+        });
+      }
     });
   }, []);
 
@@ -46,20 +52,20 @@ export default function HomeScreen() {
 
     const webUrl = shareIntent.webUrl ?? "";
     const text   = shareIntent.text   ?? "";
+    const isUrl  = (s: string) => /^https?:\/\//i.test(s.trim());
 
-    // If text is non-URL content (i.e. the user shared a caption + link),
-    // extract the destination from the text directly — no API call needed.
-    const isUrl = (s: string) => /^https?:\/\//i.test(s.trim());
     if (text && !isUrl(text)) {
-      // text contains caption; webUrl has the link (or text has embedded URL)
       const urlMatch = text.match(/https?:\/\/[^\s]+/);
       handleSavePost({
-        url: urlMatch?.[0] ?? webUrl ?? text,
+        url:      urlMatch?.[0] ?? webUrl ?? text,
         location: "",
-        caption: text.replace(/https?:\/\/[^\s]+/g, "").trim(),
-        thumb: "",
+        caption:  text.replace(/https?:\/\/[^\s]+/g, "").trim(),
+        thumb:    "",
         username: "",
-        likes: 0,
+        likes:    0,
+        savedAt:  new Date().toISOString().slice(0, 10),
+        category: classify(text),
+        starred:  false,
       });
     } else {
       const url = webUrl || (isUrl(text) ? text : "");
@@ -75,23 +81,16 @@ export default function HomeScreen() {
     toastTimer.current = setTimeout(() => setToast(null), 3000);
   };
 
-  const handleSavePost = async (raw: Omit<Post, "id" | "savedAt" | "category">) => {
-    const post: Post = {
-      ...raw,
-      id: Date.now(),
-      savedAt: new Date().toISOString().slice(0, 10),
-      category: classify(raw.caption),
-    };
-    const next = [post, ...posts];
-    setPosts(next);
-    setDests(buildDests(next));
-    await savePosts(next);
-    const d = extractDest(post.location, post.caption);
+  const handleSavePost = async (raw: Omit<Post, "id">) => {
+    if (!userId) return;
+    const saved = await insertPost(raw, userId);
+    if (!saved) { showToast("⚠️ Couldn't save post"); return; }
+    const next = [saved, ...posts];
+    setPosts(next); setDests(buildDests(next));
+    const d = extractDest(saved.location, saved.caption);
     showToast(`✅ Saved to ${d.flag} ${d.name}`);
-    setShareModal(false);
-    setPastedUrl("");
-    setManualEntry(null);
-    setManualLocation("");
+    setShareModal(false); setPastedUrl("");
+    setManualEntry(null); setManualLocation("");
   };
 
   const handleSaveUrl = async (url: string) => {
@@ -104,7 +103,12 @@ export default function HomeScreen() {
         setManualEntry({ platform: meta.platform, pendingUrl: url });
         setManualLocation("");
       } else {
-        await handleSavePost({ url, ...meta });
+        await handleSavePost({
+          url, location: meta.location, caption: meta.caption,
+          thumb: meta.thumb, username: meta.username, likes: meta.likes,
+          savedAt: new Date().toISOString().slice(0, 10),
+          category: classify(meta.caption), starred: false,
+        });
       }
     } catch {
       showToast("⚠️ Couldn't fetch that URL");
@@ -115,34 +119,54 @@ export default function HomeScreen() {
   const handleManualSave = () => {
     if (!manualLocation.trim() || !manualEntry) return;
     handleSavePost({
-      url: manualEntry.pendingUrl,
-      location: manualLocation.trim(),
+      url: manualEntry.pendingUrl, location: manualLocation.trim(),
       caption: `Post saved from ${manualEntry.platform}`,
-      thumb: "",
-      username: "",
-      likes: 0,
+      thumb: "", username: "", likes: 0,
+      savedAt: new Date().toISOString().slice(0, 10),
+      category: classify(manualLocation.trim()), starred: false,
     });
   };
-
-  const starCount = (destKey: string) =>
-    Object.keys(starred).filter(k => k.startsWith(destKey + "::")).length;
 
   const handleClearAll = () => {
     Alert.alert("Clear all saves?", "This can't be undone.", [
       { text: "Cancel", style: "cancel" },
       { text: "Clear", style: "destructive", onPress: async () => {
-        setPosts([]); setDests([]); setStarred({});
-        await clearAll();
+        if (!userId) return;
+        await deleteAllPosts(userId);
+        setPosts([]); setDests([]);
       }},
     ]);
   };
 
   const handleLoadSample = async () => {
-    const sample = DEMO_POSTS.map(p => ({ ...p, id: p.id ?? Date.now() + Math.random(), savedAt: p.savedAt ?? new Date().toISOString().slice(0,10), category: classify(p.caption) })) as Post[];
-    setPosts(sample); setDests(buildDests(sample));
-    await savePosts(sample);
-    showToast("✅ Sample destinations loaded");
+    if (!userId) return;
+    const samples = DEMO_POSTS.map(p => ({
+      url:      p.url,
+      location: p.location,
+      caption:  p.caption,
+      thumb:    p.thumb,
+      username: p.username,
+      likes:    p.likes,
+      savedAt:  p.savedAt,
+      category: classify(p.caption),
+    })) as Array<Omit<Post, "id" | "starred">>;
+    const saved = await insertDemoPosts(samples, userId);
+    if (saved.length) {
+      const next = [...saved, ...posts];
+      setPosts(next); setDests(buildDests(next));
+      showToast("✅ Sample destinations loaded");
+    }
   };
+
+  const handleSignOut = () => {
+    Alert.alert("Sign out?", "You'll need to sign back in to access your saves.", [
+      { text: "Cancel", style: "cancel" },
+      { text: "Sign out", style: "destructive", onPress: () => supabase.auth.signOut() },
+    ]);
+  };
+
+  const starCount = (destKey: string) =>
+    dests.find(d => d.key === destKey)?.items.filter(i => i.starred).length ?? 0;
 
   if (loading) {
     return (
@@ -165,7 +189,7 @@ export default function HomeScreen() {
               <>
                 <Text style={s.modalTitle}>Where was this?</Text>
                 <Text style={s.modalSub}>
-                  {manualEntry.platform} doesn't let apps read post details directly — it's a platform restriction. Just type the location and we'll auto-sort and categorise it for you.
+                  {manualEntry.platform} doesn't share post details with external apps — just type the destination and we'll sort everything else automatically.
                 </Text>
                 <View style={s.row}>
                   <TextInput
@@ -193,8 +217,7 @@ export default function HomeScreen() {
               <>
                 <Text style={s.modalTitle}>Save from Instagram</Text>
                 <Text style={s.modalSub}>
-                  On your phone: tap the send icon on any post → scroll the share sheet → tap Wunderlist.
-                  {"\n\n"}Or paste a link below:
+                  On your phone: tap the send icon on any post → scroll the share sheet → tap Wunderlist.{"\n\n"}Or paste a link below:
                 </Text>
                 <View style={s.row}>
                   <TextInput
@@ -246,6 +269,9 @@ export default function HomeScreen() {
                 <Text style={{ color: "#5A5448", fontSize: 12 }}>Clear</Text>
               </Pressable>
             )}
+            <Pressable style={s.clearBtn} onPress={handleSignOut}>
+              <Text style={{ color: "#5A5448", fontSize: 12 }}>Sign out</Text>
+            </Pressable>
             <Pressable style={s.goldBtn} onPress={() => setShareModal(true)}>
               <Text style={s.goldBtnText}>+ Save</Text>
             </Pressable>
@@ -258,7 +284,7 @@ export default function HomeScreen() {
             <Text style={{ fontSize: 52, marginBottom: 16 }}>🗺️</Text>
             <Text style={s.emptyTitle}>No saves yet</Text>
             <Text style={s.emptySub}>
-              Share any travel post from Instagram directly to Wunderlist — or paste a link, or load sample destinations to explore.
+              Share any travel post from Instagram directly to Wunderlist — or paste a link, or load sample destinations.
             </Text>
             <Pressable style={[s.ghostBtn, { marginTop: 24 }]} onPress={handleLoadSample}>
               <Text style={[s.ghostBtnText, { color: GOLD }]}>Load sample destinations →</Text>
@@ -290,10 +316,7 @@ export default function HomeScreen() {
                 >
                   <View style={{ position: "relative", height: 160, borderRadius: 18, overflow: "hidden" }}>
                     <Image source={{ uri: dest.cover }} style={StyleSheet.absoluteFill} resizeMode="cover" />
-                    <LinearGradient
-                      colors={["transparent", "rgba(7,7,15,0.95)"]}
-                      style={StyleSheet.absoluteFill}
-                    />
+                    <LinearGradient colors={["transparent", "rgba(7,7,15,0.95)"]} style={StyleSheet.absoluteFill} />
                     <View style={{ position: "absolute", top: 10, right: 10, flexDirection: "row", gap: 6 }}>
                       <View style={s.badge}>
                         <Text style={{ color: GOLD, fontSize: 10 }}>{dest.items.length} saves</Text>
@@ -335,8 +358,8 @@ export default function HomeScreen() {
 const s = StyleSheet.create({
   nav:          { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 20, paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: "rgba(255,255,255,0.06)" },
   logo:         { fontSize: 24, color: GOLD, fontWeight: "300", letterSpacing: 1 },
-  navSub:       { fontSize: 11, color: "#3A3530", marginRight: 8 },
-  row:          { flexDirection: "row", alignItems: "center", gap: 8 },
+  navSub:       { fontSize: 11, color: "#3A3530", marginRight: 4 },
+  row:          { flexDirection: "row", alignItems: "center", gap: 6 },
   heading:      { fontSize: 28, color: "#EAE6DC", fontWeight: "300", letterSpacing: -0.5, marginBottom: 6 },
   subheading:   { fontSize: 13, color: "#4A4440", lineHeight: 20 },
   destCard:     { marginBottom: 16, borderRadius: 20, overflow: "hidden", borderWidth: 1, borderColor: "rgba(255,255,255,0.07)", backgroundColor: "rgba(255,255,255,0.02)" },
@@ -347,7 +370,7 @@ const s = StyleSheet.create({
   goldBtnText:  { color: BG, fontSize: 12, fontWeight: "700", letterSpacing: 0.5 },
   ghostBtn:     { borderRadius: 12, borderWidth: 1, borderColor: "rgba(255,255,255,0.1)", paddingHorizontal: 20, paddingVertical: 12, alignItems: "center" },
   ghostBtnText: { color: "#8A8070", fontSize: 13 },
-  clearBtn:     { borderRadius: 8, paddingHorizontal: 10, paddingVertical: 6 },
+  clearBtn:     { borderRadius: 8, paddingHorizontal: 8, paddingVertical: 6 },
   empty:        { flex: 1, alignItems: "center", justifyContent: "center", padding: 32 },
   emptyTitle:   { fontSize: 24, color: "#EAE6DC", fontWeight: "300", marginBottom: 10 },
   emptySub:     { fontSize: 13, color: "#4A4440", lineHeight: 20, textAlign: "center", maxWidth: 300 },

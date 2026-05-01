@@ -3,7 +3,7 @@ import { CATEGORIES, COVERS } from "@/constants";
 export type Category = keyof typeof CATEGORIES;
 
 export interface Post {
-  id: number;
+  id: string;        // UUID from Supabase
   url: string;
   location: string;
   caption: string;
@@ -12,6 +12,7 @@ export interface Post {
   likes: number;
   savedAt: string;
   category: Category;
+  starred: boolean;  // stored on the post, no separate starred map
 }
 
 export interface Destination {
